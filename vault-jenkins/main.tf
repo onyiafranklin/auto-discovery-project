@@ -168,12 +168,8 @@ resource "aws_instance" "jenkins-server" {
     volume_type = "gp3" # General Purpose SSD (recommended)
     encrypted   = true  # Enable encryption (best practice)
   }
-  user_data = ""
-  # user_data = templatefile("./jenkins_userdata.sh", {
-  #   nr-key    = "NRAK-4FNJBSGOTULJ4XCZW4P2JOMPOKY",
-  #   nr-acc-id = 6496342
-  # })
-
+  # user_data = ""
+ 
   tags = {
     Name = "${local.name}-jenkins-server"
   }
