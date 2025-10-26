@@ -3,9 +3,9 @@
 set -euo pipefail  # Enable strict error handling
 
 # Set Variables
-BUCKET_NAME="bucket-pet-adoption1"
+BUCKET_NAME="bucket-pet-adoption6467"
 AWS_REGION="eu-west-2"
-PROFILE="default"
+PROFILE="sock_shop"
 
 # Function to handle errors
 handle_error() {

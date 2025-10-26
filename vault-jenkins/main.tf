@@ -1,6 +1,56 @@
 locals {
   name = "auto-discov"
 }
+data "aws_availability_zones" "available" {
+  state = "available"
+}
+# Create a default VPC for Jenkins server
+resource "aws_vpc" "vpc" {
+  cidr_block           = "10.0.0.0/16" # CIDR block for the VPC
+  enable_dns_support   = true
+  enable_dns_hostnames = true
+  tags = {
+    Name = "${local.name}-vpc"
+  }
+}
+
+# Create a public subnet in the VPC
+resource "aws_subnet" "public_subnet" {
+  count                   = 2 # Create two public subnets
+  vpc_id                  = aws_vpc.vpc.id
+  cidr_block              = "10.0.${count.index}.0/24"                                        # CIDR block for each subnet
+  availability_zone       = element(data.aws_availability_zones.available.names, count.index) # Use different AZs
+  map_public_ip_on_launch = true                                                              # Enable public IP assignment
+  tags = {
+    Name = "${local.name}-public-subnet-${count.index + 1}"
+  }
+}
+# Create an Internet Gateway for the VPC
+resource "aws_internet_gateway" "igw" {
+  vpc_id = aws_vpc.vpc.id
+  tags = {
+    Name = "${local.name}-internet-gateway"
+  }
+}
+
+# Create a route table for the public subnets
+resource "aws_route_table" "public" {
+  vpc_id = aws_vpc.vpc.id
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.igw.id
+  }
+  tags = {
+    Name = "${local.name}-public-rt"
+  }
+}
+# Associate the public subnets with the route table
+resource "aws_route_table_association" "public_assoc" {
+  count          = 2
+  subnet_id      = aws_subnet.public_subnet[count.index].id
+  route_table_id = aws_route_table.public.id
+}
+
 #Creating kms key
 resource "aws_kms_key" "kms-key" {
   description             = "${local.name}-vault-kms-key" // the kms key 
@@ -67,6 +117,7 @@ resource "aws_iam_role_policy_attachment" "vault-ssm-attachment" {
 resource "aws_security_group" "vault_sg" {
   name        = "vault-sg"
   description = "Allow SSH, HTTP, HTTPS, and Vault UI/API"
+  vpc_id      = aws_vpc.vpc.id
 ingress {
   from_port   = 22
   to_port     = 22
@@ -119,7 +170,9 @@ resource "aws_instance" "vault_server" {
   ami                  = data.aws_ami.ubuntu.id # Ubuntu in eu-west-2
   instance_type        = "t2.medium"
   key_name             = aws_key_pair.public_key.key_name
-  security_groups      = [aws_security_group.vault_sg.name]
+  associate_public_ip_address = true
+  subnet_id           = aws_subnet.public_subnet[0].id
+  vpc_security_group_ids = [aws_security_group.vault_sg.id]
   iam_instance_profile = aws_iam_instance_profile.vault-profile.id
   user_data = templatefile("./vault-install.sh", {
     var1 = "eu-west-2",
@@ -166,6 +219,7 @@ resource "aws_instance" "jenkins-server" {
   instance_type               = "t2.medium"
   key_name                    = aws_key_pair.public_key.id
   associate_public_ip_address = true
+  subnet_id                   = aws_subnet.public_subnet[1].id
   vpc_security_group_ids      = [aws_security_group.jenkins_sg.id]
   iam_instance_profile        = aws_iam_instance_profile.jenkins-profile.id
   root_block_device {
@@ -222,8 +276,7 @@ resource "aws_iam_instance_profile" "jenkins-profile" {
 resource "aws_security_group" "jenkins_sg" {
   name        = "${local.name}-jenkins-sg"
   description = "Allow SSH and HTTPS"
-
-  
+  vpc_id      = aws_vpc.vpc.id
 
   ingress {
     from_port   = 8080
@@ -309,6 +362,7 @@ resource "aws_acm_certificate_validation" "team2_cert_validation" {
 resource "aws_security_group" "elb-vault-sg" {
   name        = "elb-vault-sg"
   description = "Allow HTTPS"
+  vpc_id      = aws_vpc.vpc.id
 
   ingress {
     from_port   = 443
@@ -328,8 +382,9 @@ resource "aws_security_group" "elb-vault-sg" {
 # Create load balancer for Vault Server
 resource "aws_elb" "elb-vault" {
   name               = "vault-elb"
-  availability_zones = ["eu-west-2a", "eu-west-2b","eu-west-2c"]
-security_groups = [ aws_security_group.elb-vault-sg.id ]
+  subnets            = [aws_subnet.public_subnet[0].id, aws_subnet.public_subnet[1].id]
+
+  security_groups    = [aws_security_group.elb-vault-sg.id]
   listener {
     instance_port      = 8200
     instance_protocol  = "http"
@@ -378,7 +433,7 @@ resource "aws_route53_record" "vault-record" {
 resource "aws_elb" "elb_jenkins" {
   name               = "elb-jenkins"
   security_groups    = [aws_security_group.jenkins-elb-sg.id]
-  availability_zones = ["eu-west-2a", "eu-west-2b","eu-west-2c"]
+  subnets            = [aws_subnet.public_subnet[0].id, aws_subnet.public_subnet[1].id]
   listener {
     instance_port      = 8080
     instance_protocol  = "HTTP"
@@ -407,6 +462,7 @@ resource "aws_elb" "elb_jenkins" {
 resource "aws_security_group" "jenkins-elb-sg" {
   name        = "${local.name}-jenkins-elb-sg"
   description = "Allow HTTPS"
+  vpc_id      = aws_vpc.vpc.id
 
   ingress {
     description = "HTTPS from anywhere"
